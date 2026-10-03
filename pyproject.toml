@@ -1,0 +1,35 @@
+[project]
+name = "finance-agent"
+version = "0.1.0"
+description = "A personal finance assistant you text on Discord, backed by a Google Sheet"
+license = "MIT"
+requires-python = ">=3.12"
+dependencies = [
+    "discord-py>=2.7.1",
+    "gspread>=6.2.1",
+    "httpx>=0.28.1",
+    "langchain-core>=1.6.5",
+    "langchain-ollama>=1.1.0",
+    "langgraph>=1.2.12",
+    "langgraph-checkpoint-sqlite>=3.1.1",
+    "ollama>=0.6.2",
+    "python-dotenv>=1.2.3",
+    "tzdata>=2026.4",
+]
+
+# Makes `src/fin_agent` an installable package, so `import fin_agent` works everywhere.
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fin_agent"]
+
+[tool.pytest.ini_options]
+# discord.py imports Python's deprecated 'audioop' (voice support we don't use).
+filterwarnings = ["ignore:'audioop' is deprecated:DeprecationWarning"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]

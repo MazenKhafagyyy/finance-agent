@@ -1,0 +1,19 @@
+# --- PRIVACY: real financial data and secrets never go to git ---
+data/real/
+*.db
+.env
+.env.*
+!.env.example
+.dev.vars
+# Google service-account keys, in case one is ever copied into this folder
+*service_account*.json
+*credentials*.json
+
+# --- Python ---
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# --- Editor / AI assistant working files ---
+.claude/
