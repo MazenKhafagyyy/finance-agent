@@ -1,7 +1,7 @@
 """
 Chat with your finance assistant in the terminal.
 
-    uv run python -m fin_agent.chat
+    uv run fin-agent chat
 
 Commands:  /new         start a fresh conversation (a new thread)
            /memories    list what the assistant remembers about you
@@ -15,45 +15,27 @@ What you'll see for each message:
     ❓ a confirmation question before anything is written to your Sheet
     the answer, then (1.8s · model 2x 1.6s · tools 0.2s · tokens 2,672 in / 45 out · chat total 12,340)
 
-Conversations are saved in data/<mode>/assistant.db (gitignored), so closing
-and reopening continues the same conversation. That's the checkpointer
-(short-term memory). Facts and preferences about you live in
-data/<mode>/memories.db (long-term memory) and survive /new.
+Conversations are saved in DATA_DIR/assistant.db (data/ by default, gitignored),
+so closing and reopening continues the same conversation. That's the
+checkpointer (short-term memory). Facts and preferences about you live in
+DATA_DIR/memories.db (long-term memory) and survive /new.
 
 PRIVACY: this shows your real spending. Don't paste the output into a cloud AI chat.
 """
-import sqlite3
+import textwrap
 import time
 import uuid
 
 import httpx
 import ollama
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
 from fin_agent import config
-from fin_agent.agent import build_agent
-from fin_agent.llm import chat_model
-from fin_agent.memory import MemoryBank
-from fin_agent.sheets import SheetFormatError, SheetStore
+from fin_agent.app import forget_text, memories_text, start
+from fin_agent.checks import OLLAMA_DOWN
+from fin_agent.llm import token_usage
 from fin_agent.stream_output import StatusBar, TokenPrinter
-
-
-def token_usage(messages) -> tuple[int, int]:
-    """(tokens read, tokens written) as REPORTED BY THE MODEL for these messages.
-
-    Every model reply carries `usage_metadata`: how many tokens it read (the
-    instructions, tool descriptions and history, re-sent on every call) and how
-    many it wrote. Cloud models bill on exactly these numbers. Messages without
-    it (yours, tool results, the no-model quick path) count as zero.
-    """
-    read = written = 0
-    for message in messages:
-        usage = getattr(message, "usage_metadata", None) or {}
-        read += usage.get("input_tokens", 0)
-        written += usage.get("output_tokens", 0)
-    return read, written
 
 
 def chat_token_usage(agent, thread: dict) -> tuple[int, int]:
@@ -140,59 +122,9 @@ def run_turn(agent, payload, thread: dict) -> None:
           f" · tokens {turn_read:,} in / {turn_written:,} out · chat total {chat_read + chat_written:,})\n")
 
 
-def show_memories(memory: MemoryBank) -> None:
-    memories = memory.all()
-    if not memories:
-        print("  (no memories yet: tell me lasting things like \"I get paid on the 25th\")\n")
-        return
-    for m in memories:
-        print(f"  #{m.id}  [{m.topic}]  {m.text}   ({m.kind}, updated {m.updated[:10]})")
-    print()
-
-
-def forget_command(memory: MemoryBank, text: str) -> None:
-    """/forget 3  or  /forget payday. Plain code: deleting never depends on the model."""
-    arg = text.removeprefix("/forget").strip().lstrip("#").strip("[]")
-    if not arg:
-        print("  usage: /forget <number or topic>   (see /memories)\n")
-        return
-    gone = memory.forget(int(arg)) if arg.isdigit() else memory.forget_topic(arg)
-    print(f"  Forgot [{gone.topic}]: {gone.text}\n" if gone else f"  No memory {arg!r}.\n")
-
-
-OLLAMA_DOWN = (f"Can't reach Ollama at {config.OLLAMA_URL}. Start it (open the Ollama app, "
-               f"or run `ollama serve` in another terminal), then try again.")
-
-
-def check_ollama() -> None:
-    """Fail early with a clear message instead of a long traceback on the first question."""
-    try:
-        tags = httpx.get(f"{config.OLLAMA_URL}/api/tags", timeout=5).json()
-    except httpx.HTTPError:
-        raise SystemExit(OLLAMA_DOWN)
-    # CLOUD models (names ending in "cloud") run on Ollama's servers and are never
-    # downloaded, so they never appear in the local list. Checking for them there
-    # produced a false warning on every start.
-    if config.MODEL.endswith("cloud"):
-        return
-    names = {m["name"] for m in tags.get("models", [])}
-    # "qwen3.5:4b" and "lfm2.5" (= "lfm2.5:latest") are both valid ways to name a model.
-    if config.MODEL not in names and f"{config.MODEL}:latest" not in names:
-        print(f"Warning: model {config.MODEL!r} isn't in `ollama list`. Run `ollama pull {config.MODEL}`.")
-
-
 def main() -> None:
-    check_ollama()
-    store = SheetStore(config.GOOGLE_SHEET_ID, config.GOOGLE_SERVICE_ACCOUNT_FILE)
-    try:
-        store.setup()   # checks every tab's columns BEFORE anything can be written
-    except SheetFormatError as err:
-        raise SystemExit(f"Stopped: {err}")
-    config.DATA_DIR.mkdir(parents=True, exist_ok=True)
-    # check_same_thread=False: LangGraph may use the connection from another thread.
-    saver = SqliteSaver(sqlite3.connect(config.DATA_DIR / "assistant.db", check_same_thread=False))
-    memory = MemoryBank(config.DATA_DIR / "memories.db")
-    agent = build_agent(store, llm=chat_model(reasoning=False), checkpointer=saver, memory=memory)
+    assistant = start()
+    agent, memory = assistant.agent, assistant.memory
 
     # A "thread" is one conversation. Same thread_id = the agent sees the history.
     thread = {"configurable": {"thread_id": "main"}}
@@ -209,10 +141,10 @@ def main() -> None:
             print("(new conversation; long-term memories are kept)\n")
             continue
         if text == "/memories":
-            show_memories(memory)
+            print(textwrap.indent(memories_text(memory), "  ") + "\n")
             continue
         if text.startswith("/forget"):
-            forget_command(memory, text)
+            print(f"  {forget_text(memory, text.removeprefix('/forget'))}\n")
             continue
         if text == "/tokens":
             read, written = chat_token_usage(agent, thread)

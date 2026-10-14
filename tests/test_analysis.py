@@ -1,4 +1,4 @@
-"""Phase 5 analysis tests on the fake Sheet. Today is Wed 2026-09-30; this week = Sat 26 .. Wed 30,
+"""Analysis tests on the fake Sheet. Today is Wed 2026-09-30; this week = Sat 26 .. Wed 30,
 compared with Sat 19 .. Wed 23."""
 import pytest
 

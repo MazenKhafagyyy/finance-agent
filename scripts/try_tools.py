@@ -1,5 +1,5 @@
 """
-Try the Phase 2 tools by hand on the REAL Sheet (no AI involved).
+Try the tools by hand on the REAL Sheet (no AI involved).
 
     uv run python scripts/try_tools.py add "200 mcdonalds"
     uv run python scripts/try_tools.py total this_week
@@ -20,6 +20,7 @@ import json
 from fin_agent import config
 from fin_agent.dates import PERIODS, now_local, resolve_period
 from fin_agent.entries import build_from_text
+from fin_agent.sheet_format import CURRENCIES
 from fin_agent.sheets import SheetStore
 from fin_agent.tools import describe_entry, list_transactions, save_expense, spending_breakdown, spending_total
 
@@ -29,7 +30,7 @@ sub.add_parser("add").add_argument("text", help='a quick line, e.g. "200 mcdonal
 for name in ("total", "breakdown", "list"):
     p = sub.add_parser(name)
     p.add_argument("period", choices=PERIODS)
-    p.add_argument("--currency", default=config.DEFAULT_CURRENCY, choices=["EGP", "CAD"])
+    p.add_argument("--currency", default=config.DEFAULT_CURRENCY, choices=CURRENCIES)
     p.add_argument("--nonessential", action="store_true", help="only non-essential spending")
 args = parser.parse_args()
 
@@ -55,5 +56,5 @@ else:
         result = spending_breakdown(snap, start, end, args.currency, essential=essential)
     else:
         result = list_transactions(snap, start, end, args.currency)
-    # This JSON is exactly what the agent's model will receive in Phase 3.
+    # This JSON is exactly what the agent's model receives.
     print(json.dumps(result, indent=2, ensure_ascii=False))

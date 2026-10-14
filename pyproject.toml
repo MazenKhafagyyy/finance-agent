@@ -17,6 +17,10 @@ dependencies = [
     "tzdata>=2026.4",
 ]
 
+# The `fin-agent` command (check, bot, chat, hello); see src/fin_agent/cli.py.
+[project.scripts]
+fin-agent = "fin_agent.cli:main"
+
 # Makes `src/fin_agent` an installable package, so `import fin_agent` works everywhere.
 [build-system]
 requires = ["hatchling"]

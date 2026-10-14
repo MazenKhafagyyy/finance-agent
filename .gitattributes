@@ -1,0 +1,5 @@
+# Line endings that each kind of script needs, whatever the machine's git settings:
+# bash and systemd read LF only; cmd.exe's `goto` can misbehave in a .bat with LF.
+*.sh      text eol=lf
+*.service text eol=lf
+*.bat     text eol=crlf

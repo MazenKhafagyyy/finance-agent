@@ -1,6 +1,6 @@
 """
-Talking to the model: the chat model the agent uses, and a cleanup helper for
-models that write their reasoning into the answer.
+Talking to the model: the chat model the agent uses, a cleanup helper for
+models that write their reasoning into the answer, and token counting.
 """
 import re
 
@@ -30,3 +30,19 @@ def strip_thinking(text: str) -> str:
     mid-thought) is removed to the end."""
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
     return re.sub(r"<think>.*", "", text, flags=re.DOTALL).strip()
+
+
+def token_usage(messages) -> tuple[int, int]:
+    """(tokens read, tokens written) as REPORTED BY THE MODEL for these messages.
+
+    Every model reply carries `usage_metadata`: how many tokens it read (the
+    instructions, tool descriptions and history, re-sent on every call) and how
+    many it wrote. Cloud models bill on exactly these numbers. Messages without
+    it (yours, tool results, the no-model quick path) count as zero.
+    """
+    read = written = 0
+    for message in messages:
+        usage = getattr(message, "usage_metadata", None) or {}
+        read += usage.get("input_tokens", 0)
+        written += usage.get("output_tokens", 0)
+    return read, written

@@ -1,0 +1,30 @@
+# Runs the Discord bot on a Linux server (the server's version of run_bot.bat).
+# systemd starts it at boot and starts it again if it crashes.
+#
+# This is a TEMPLATE: deploy/install-server.sh fills in __USER__ and __PROJECT__
+# and installs it. By hand: replace both, then (as root)
+#   cp fin-agent.service /etc/systemd/system/ && systemctl daemon-reload && systemctl enable --now fin-agent
+# Watch the log:   journalctl -u fin-agent -f
+# After an update: git pull && uv sync --no-dev && sudo systemctl restart fin-agent
+
+[Unit]
+Description=Finance Agent (Discord bot)
+# The bot refuses to start when Ollama isn't answering (check_ollama in checks.py),
+# so ask systemd to bring the network and Ollama up first.
+Wants=network-online.target ollama.service
+After=network-online.target ollama.service
+
+[Service]
+# Never root: the bot only needs to read its own folder.
+User=__USER__
+WorkingDirectory=__PROJECT__
+# The command `uv sync` installed, so nothing is downloaded or synced at start-up.
+ExecStart=__PROJECT__/.venv/bin/fin-agent bot
+# Print log lines as they happen instead of holding them in a buffer.
+Environment=PYTHONUNBUFFERED=1
+# Ollama can take a few seconds to answer after boot; a failed start is retried.
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -1,5 +1,5 @@
 """
-ANALYSIS: the "what does it mean?" layer on top of the Phase 2 tools.
+ANALYSIS: the "what does it mean?" layer on top of the basic tools in tools.py.
 
 Same principle as everywhere else: CODE computes every number, the MODEL only
 explains. Each function takes a Snapshot (everything read from the Sheet) and

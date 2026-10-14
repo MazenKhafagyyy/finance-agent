@@ -132,30 +132,39 @@ Then edit `.env`:
 | `GOOGLE_SHEET_ID` | The Sheet's link or ID |
 | `GOOGLE_SERVICE_ACCOUNT_FILE` | Path to the JSON key file |
 | `MODEL` | The Ollama chat model (default `gemma4:31b-cloud`) |
-| `MODE` | `demo` or `real`: which folder under `data/` holds the assistant's own files. `data/real/` is never committed |
-| `TIMEZONE`, `DEFAULT_CURRENCY` | Used for "today", "this week" and amounts |
+| `TIMEZONE`, `DEFAULT_CURRENCY` | Used for "today", "this week" and amounts (`EGP` or `CAD`) |
+| `DATA_DIR` | Where the assistant keeps its own files: conversation history, memories, sessions (default `data`, gitignored) |
+| `EMBED_MODEL`, `OLLAMA_URL`, `OLLAMA_NUM_GPU` | Rarely changed; explained in `.env.example` |
 
-Check the Sheet connection (prints counts only, never your transactions):
+### 6. Check
 
 ```bash
-uv run python scripts/sheet_check.py
+uv run fin-agent check
 ```
+
+It tries each piece in turn (settings, Ollama, both models, the Sheet,
+Discord, the data folder) and prints one line each, with the fix for anything
+that fails. Run it again until every line has a ✓. It prints counts only,
+never your transactions.
 
 ## Run the bot
 
 ```bash
-uv run python -m fin_agent.discord_bot
+uv run fin-agent bot
 ```
 
 When it prints `Logged in as ...`, open your direct message with the bot and
 type. If you can't find the bot in Discord, make it message you first:
 
 ```bash
-uv run python scripts/discord_hello.py
+uv run fin-agent hello
 ```
 
 Each reply ends with one small line showing the tools it used, the time taken
 and the tokens spent.
+
+On Windows, `deploy/run_bot.bat` starts Ollama if needed and then the bot;
+point a desktop shortcut at it.
 
 ### Keeping it online
 
@@ -163,13 +172,28 @@ The bot answers only while this program is running, so it needs a machine that
 stays on: a spare laptop, a small home server or a rented one. It connects
 outward to Discord, so it needs no open ports and no public address.
 
+On a Linux server (Ubuntu or Debian), one script installs everything and runs
+the bot as a service that starts at boot and restarts after a crash. As the
+user the bot should run as (not root):
+
+```bash
+git clone https://github.com/MazenKhafagyyy/finance-agent.git
+cd finance-agent
+bash deploy/install-server.sh
+```
+
+The first run creates `.env` and stops so you can fill it in; run it again
+afterwards. It runs `fin-agent check` before starting the service. To update
+later: `git pull`, then run the script again. The log:
+`journalctl -u fin-agent -f`.
+
 ## Terminal chat
 
 The same assistant, without Discord. Useful for development, and it shows more
 detail (the model's thinking, each tool call and its result):
 
 ```bash
-uv run python -m fin_agent.chat
+uv run fin-agent chat
 ```
 
 Commands: `/new` (fresh conversation), `/memories`, `/forget <number or topic>`,
@@ -188,6 +212,10 @@ channel, so they need no network, no Ollama and no accounts.
 
 | Path | What it is |
 |---|---|
+| `src/fin_agent/cli.py` | The `fin-agent` command: `check`, `bot`, `chat`, `hello` |
+| `src/fin_agent/checks.py` | `fin-agent check`, and the Ollama check every start-up runs |
+| `src/fin_agent/app.py` | The start-up the bot and terminal chat share, and `/memories`, `/forget` |
+| `src/fin_agent/config.py` | Settings from `.env`, and what's wrong with them |
 | `src/fin_agent/discord_bot.py` | The Discord bot: DMs, buttons, slash commands, formatting |
 | `src/fin_agent/turns.py` | One message in, one result out; what a waiting "Save this?" means |
 | `src/fin_agent/sessions.py` | The 10-minute session rule |
@@ -196,11 +224,12 @@ channel, so they need no network, no Ollama and no accounts.
 | `src/fin_agent/sheets.py`, `sheet_format.py` | Reading and writing the Sheet, and a fake for tests |
 | `src/fin_agent/memory.py` | Long-term memory |
 | `src/fin_agent/chat.py` | Terminal chat |
-| `src/fin_agent/quickline.py`, `redact.py`, `llm.py`, `stream_output.py` | Quick-line parser, sensitive-number patterns, model setup, terminal output |
-| `scripts/sheet_check.py` | Check the Sheet connection (counts only) |
-| `scripts/discord_hello.py` | Make the bot message you first |
-| `scripts/try_tools.py` | Run the tools by hand on your Sheet, without the model |
-| `scripts/memory_trial.py` | Live test of long-term memory with the real model, on fake data |
+| `src/fin_agent/quickline.py`, `redact.py`, `llm.py`, `stream_output.py` | Quick-line parser, sensitive-number patterns, model setup and token counts, terminal output |
+| `deploy/install-server.sh` | Install and run the bot as a service on a Linux server |
+| `deploy/fin-agent.service` | The systemd service (a template the install script fills in) |
+| `deploy/run_bot.bat` | Windows launcher: starts Ollama if needed, then the bot |
+| `scripts/try_tools.py` | Developer tool: run the tools by hand on your Sheet, without the model |
+| `scripts/memory_trial.py` | Developer tool: live test of long-term memory with the real model, on fake data |
 | `tests/` | The test suite |
 
 ## Privacy
@@ -211,7 +240,7 @@ channel, so they need no network, no Ollama and no accounts.
 - **Discord stores the messages** you exchange with the bot.
 - Conversation history and memories are SQLite files on the machine that runs
   the bot.
-- `.env`, key files, `data/real/` and every `*.db` file are ignored by git.
+- `.env`, key files, `data/` and every `*.db` file are ignored by git.
 - Memories are refused if they look like a transaction or contain a card,
   account or ID number, and you can list and delete them at any time.
 

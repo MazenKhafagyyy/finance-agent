@@ -1,7 +1,8 @@
 """
 Chat with your finance assistant in a Discord direct message.
 
-    uv run python -m fin_agent.discord_bot
+    uv run fin-agent bot      run the bot
+    uv run fin-agent hello    make the bot message you first (if you can't find it in Discord)
 
 ONE-TIME SETUP (about 5 minutes, all on discord.com/developers/applications)
   1. New Application -> name it (e.g. EXO).
@@ -13,7 +14,7 @@ ONE-TIME SETUP (about 5 minutes, all on discord.com/developers/applications)
      into a server only you are in. The bot never talks there.)
   4. In Discord: Settings -> Advanced -> Developer Mode on, then right-click
      your own name -> Copy User ID -> put it in .env as DISCORD_OWNER_ID.
-  5. Start this program, then open the bot's profile and send it a message.
+  5. Run `uv run fin-agent check`, start the bot, then send it a message.
 
 WHAT YOU GET
     any message     -> the agent answers, with one small footer line:
@@ -43,22 +44,18 @@ memories and conversation history stay on this machine.
 """
 import asyncio
 import logging
-import sqlite3
 from datetime import datetime, timezone
 
 import discord
 import httpx
 import ollama
 from discord import app_commands
-from langgraph.checkpoint.sqlite import SqliteSaver
 
 from fin_agent import config
-from fin_agent.agent import build_agent
-from fin_agent.chat import OLLAMA_DOWN, check_ollama
-from fin_agent.llm import chat_model
+from fin_agent.app import forget_text, memories_text, start
+from fin_agent.checks import OLLAMA_DOWN
 from fin_agent.memory import MemoryBank
 from fin_agent.sessions import SessionBook
-from fin_agent.sheets import SheetFormatError, SheetStore
 from fin_agent.turns import TurnResult, answer_confirmation, run_turn
 
 log = logging.getLogger("fin_agent.discord_bot")
@@ -105,22 +102,6 @@ def render(result: TurnResult) -> list[str]:
 
 def confirm_text(result: TurnResult) -> str:
     return f"{declined_note(result)}❓ **Save this?**\n{result.confirm}"
-
-
-def memories_text(memory: MemoryBank) -> str:
-    memories = memory.all()
-    if not memories:
-        return "(no memories yet: tell me lasting things like \"I get paid on the 25th\")"
-    return "\n".join(f"#{m.id}  [{m.topic}]  {m.text}  ({m.kind}, updated {m.updated[:10]})" for m in memories)
-
-
-def forget_text(memory: MemoryBank, what: str) -> str:
-    """/forget 3  or  /forget payday. Plain code: deleting never depends on the model."""
-    arg = what.strip().lstrip("#").strip("[]")
-    if not arg:
-        return "Give a memory's number or topic (see /memories)."
-    gone = memory.forget(int(arg)) if arg.isdigit() else memory.forget_topic(arg)
-    return f"Forgot [{gone.topic}]: {gone.text}" if gone else f"No memory {arg!r}."
 
 
 def utc_now() -> datetime:
@@ -275,24 +256,67 @@ class ExoBot(discord.Client):
             await reply(interaction, lambda: forget_text(self.memory, what))
 
 
-def main() -> None:
-    if not config.DISCORD_BOT_TOKEN or not config.DISCORD_OWNER_ID:
-        raise SystemExit("Set DISCORD_BOT_TOKEN and DISCORD_OWNER_ID in .env (steps at the top of discord_bot.py).")
-    # From here on, the same start-up as the terminal chat (chat.py).
-    check_ollama()
-    store = SheetStore(config.GOOGLE_SHEET_ID, config.GOOGLE_SERVICE_ACCOUNT_FILE)
+# ---------------------------------------------------------------------------
+# Reaching the owner without running the bot (`fin-agent hello` and `check`)
+#
+# Discord has two channels to a bot. The GATEWAY is the live connection the
+# running bot listens on. The REST API is plain web requests ("send this
+# message"). This only uses REST, so it never competes with a running bot.
+# ---------------------------------------------------------------------------
+
+class OwnerUnreachable(Exception):
+    """Discord refused; the message says what to fix."""
+
+
+async def contact_owner(greet: bool) -> str:
+    """Log in as the bot, find DISCORD_OWNER_ID and, if `greet`, send it a
+    message so the conversation shows up in your DM list. Returns who was found."""
+    client = discord.Client(intents=discord.Intents.none())
+    async with client:
+        try:
+            await client.login(config.DISCORD_BOT_TOKEN)      # REST only: no gateway connection
+        except discord.LoginFailure:
+            raise OwnerUnreachable("Discord rejected DISCORD_BOT_TOKEN. In the developer portal: "
+                                   "Bot, Reset Token, and paste the new token into .env.")
+        try:
+            owner = await client.fetch_user(config.DISCORD_OWNER_ID)
+        except discord.NotFound:
+            raise OwnerUnreachable("DISCORD_OWNER_ID is not a Discord user. Copy YOUR user ID again "
+                                   "(Developer Mode on, right-click your own name, Copy User ID).")
+        found = f"bot {client.user}, owner account {owner} (this must be you)"
+        if greet:
+            try:
+                await owner.send("👋 I'm online. Message me here: try `how much did I spend this week?`")
+            except discord.Forbidden:
+                raise OwnerUnreachable(
+                    "Discord refused the message: the bot may not DM this account yet.\n"
+                    "That means it is neither installed to your account nor in a server with you.\n"
+                    "Fix ONE of these, then try again:\n"
+                    "  a) Developer portal -> Installation -> tick User Install -> open the install link\n"
+                    "     in a browser while logged in as the owner account -> Add to My Apps.\n"
+                    "  b) Add the bot to a server you are in (OAuth2 -> URL Generator -> scope `bot`).\n"
+                    "Also check Discord Settings -> Content & Social -> allow DMs.")
+        return found
+
+
+def hello() -> None:
+    """`fin-agent hello`: make the bot message YOU first. Use it once, when you
+    can't find the bot in Discord. The bot itself can keep running meanwhile."""
+    problems = config.discord_problems()
+    if problems:
+        raise SystemExit("Fix these in .env first:\n" + "\n".join(f"  - {p}" for p in problems))
     try:
-        store.setup()   # checks every tab's columns BEFORE anything can be written
-    except SheetFormatError as err:
-        raise SystemExit(f"Stopped: {err}")
-    config.DATA_DIR.mkdir(parents=True, exist_ok=True)
-    # check_same_thread=False: each turn runs in a worker thread (see `work`).
-    saver = SqliteSaver(sqlite3.connect(config.DATA_DIR / "assistant.db", check_same_thread=False))
-    memory = MemoryBank(config.DATA_DIR / "memories.db")
-    agent = build_agent(store, llm=chat_model(reasoning=False), checkpointer=saver, memory=memory)
+        print(f"Logged in: {asyncio.run(contact_owner(greet=True))}")
+    except OwnerUnreachable as err:
+        raise SystemExit(str(err))
+    print("Sent. Open Discord: the conversation with the bot is now at the top of your Direct Messages.")
+
+
+def main() -> None:
+    assistant = start(discord=True)     # the same start-up as the terminal chat
     sessions = SessionBook(config.DATA_DIR / "sessions.db")
     # run() connects and blocks until Ctrl+C. The token is passed along, never printed.
-    ExoBot(agent, memory, sessions, config.DISCORD_OWNER_ID).run(config.DISCORD_BOT_TOKEN)
+    ExoBot(assistant.agent, assistant.memory, sessions, config.DISCORD_OWNER_ID).run(config.DISCORD_BOT_TOKEN)
 
 
 if __name__ == "__main__":

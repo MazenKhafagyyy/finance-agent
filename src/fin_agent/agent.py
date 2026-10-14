@@ -33,9 +33,9 @@ THIS AGENT AS A GRAPH (LangGraph)
                     └──────────────┘                  └─────────────┘
                         ▲      │ tool call(s)
                         │      ▼
-                    ┌──────────────┐
-                    │    tools     │  runs the Python functions
-                    └──────────────┘
+                    ┌──────────────┐  runs the Python functions, ONE tool call
+                    │    tools     │◄┐ per step: it loops on itself until every
+                    └──────────────┘─┘ call in the model's message has a result
 
   - STATE: what flows through the graph. Here: the list of messages
     (yours, the model's, tool results). MessagesState keeps and appends them.
@@ -58,7 +58,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from langchain_core.tools import tool
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.prebuilt import InjectedState, ToolNode
-from langgraph.types import interrupt
+from langgraph.types import Send, interrupt
 
 from fin_agent import config
 from fin_agent.analysis import budget_status, unessential_report, unusual_spending, weekly_review
@@ -227,8 +227,17 @@ def make_tools(store, now_fn: Callable[[], tuple[str, str]]) -> list:
 
         # PAUSE the whole graph here and hand this summary to the chat program,
         # which asks the user. When the user answers, the graph resumes and
-        # interrupt() returns their answer. (On resume LangGraph re-runs this tool
-        # from the top; that's fine because nothing was saved yet.)
+        # interrupt() returns their answer.
+        #
+        # HOW RESUMING REALLY WORKS: LangGraph can't continue a Python function
+        # from the middle. It re-runs the whole paused STEP from the top, and
+        # this time interrupt() returns the saved answer instead of pausing. So
+        # everything in a step that pauses runs again on every resume. That's
+        # only safe here because this tool call is the ONLY thing in its step
+        # (see after_agent/after_tools in build_agent): nothing was saved before
+        # the pause, and the save below happens once, after it. Two add_expense
+        # calls sharing one step would save the first one again when the second
+        # one resumes.
         # The summary shows the weekday and "(yesterday)" etc., so a wrong date is visible.
         summary = describe_entry(built, today)
         answer = interrupt({"action": "add_expense", "summary": summary})
@@ -239,7 +248,7 @@ def make_tools(store, now_fn: Callable[[], tuple[str, str]]) -> list:
         # same add_expense twice more and asked again. Declining ends it.
         return "The user declined, so nothing was saved. Do not call add_expense again for this; just acknowledge it."
 
-    # --- Phase 5: analysis tools. Each returns one complete, precomputed picture,
+    # --- Analysis tools. Each returns one complete, precomputed picture,
     # so a question needs ONE tool call (one model round trip) instead of several.
 
     @tool
@@ -451,24 +460,55 @@ def build_agent(store, *, llm=None, checkpointer=None, memory: MemoryBank | None
         return {"messages": [AIMessage(content=checked, id=reply.id,
                                        usage_metadata=getattr(reply, "usage_metadata", None))]}
 
-    def after_agent(state: MessagesState) -> str:
-        # The model asked for tools -> run them; otherwise its reply is final -> check it.
-        return "tools" if getattr(state["messages"][-1], "tool_calls", None) else "check_reply"
+    # --- Edges: ONE tool call per step -----------------------------------------
+    # The model may ask for several tools in one message ("150 starbucks and 200
+    # mcdonalds" = two add_expense calls). Handing them all to the tools node at
+    # once makes them ONE step, run in parallel threads, and that broke the
+    # confirmation in two ways:
+    #   1. A resume re-runs the whole step. After "yes, yes" the first expense
+    #      was saved again when the second one resumed: 3 rows instead of 2.
+    #   2. Answers are matched to interrupt() calls by the ORDER they happen in,
+    #      and threads have no fixed order: "yes" to Starbucks could save
+    #      McDonald's instead.
+    # So each tool call gets its own step. LangGraph checkpoints after every
+    # step, and a finished step is never run again: its result is already in the
+    # state as a ToolMessage. Only the one paused call re-runs on resume.
+
+    def next_tool_call(state: MessagesState) -> dict | None:
+        """The first tool call in the model's latest message that has no result yet."""
+        messages = state["messages"]
+        asked = max(i for i, m in enumerate(messages) if isinstance(m, AIMessage))
+        answered = {m.tool_call_id for m in messages[asked + 1:] if isinstance(m, ToolMessage)}
+        return next((c for c in messages[asked].tool_calls if c["id"] not in answered), None)
+
+    def after_agent(state: MessagesState) -> Send | str:
+        # The model asked for tools -> run the first; otherwise its reply is final -> check it.
+        # Send("tools", [call]) means "run the tools node with THIS input" (one
+        # tool call) instead of the whole state.
+        call = next_tool_call(state)
+        return Send("tools", [call]) if call else "check_reply"
+
+    def after_tools(state: MessagesState) -> Send | str:
+        # More calls from the same model message -> run the next one; all done ->
+        # the model sees the results: the LOOP.
+        call = next_tool_call(state)
+        return Send("tools", [call]) if call else "agent"
 
     graph = StateGraph(MessagesState)
     graph.add_node("quick_add", quick_add)
     graph.add_node("agent", agent)
     graph.add_node("check_reply", check_reply)
-    # ToolNode runs whatever tool calls the last AI message contains. If a tool
-    # fails, for ANY reason (a bad argument type like essential="", an unknown
-    # category...), the error text is sent back to the model as the tool's
-    # result, so it can correct itself on the next turn instead of crashing the
-    # chat. (Pausing via interrupt() is not an error; ToolNode lets it through.)
+    # ToolNode runs the tool call it is sent and adds the result to the history
+    # as a ToolMessage. If a tool fails, for ANY reason (a bad argument type like
+    # essential="", an unknown category...), the error text is sent back to the
+    # model as the tool's result, so it can correct itself on the next turn
+    # instead of crashing the chat. (Pausing via interrupt() is not an error;
+    # ToolNode lets it through.)
     graph.add_node("tools", ToolNode(tools, handle_tool_errors=True))
 
     graph.add_conditional_edges(START, route_start, ["quick_add", "agent"])
     graph.add_edge("quick_add", END)
     graph.add_conditional_edges("agent", after_agent, ["tools", "check_reply"])
-    graph.add_edge("tools", "agent")   # after tools run, the model sees the results: the LOOP
+    graph.add_conditional_edges("tools", after_tools, ["tools", "agent"])
     graph.add_edge("check_reply", END)
     return graph.compile(checkpointer=checkpointer)

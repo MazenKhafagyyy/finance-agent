@@ -2,7 +2,7 @@
 LONG-TERM MEMORY: what the assistant knows about you across conversations.
 
 SHORT-TERM vs LONG-TERM
-    The checkpointer (Phase 3) keeps ONE conversation's messages. That's
+    The checkpointer keeps ONE conversation's messages. That's
     short-term memory: it grows every turn and is gone after /new.
     This module keeps a small, curated PROFILE of facts and preferences about
     you. It survives /new and restarts, and it goes into the system prompt so
@@ -32,7 +32,7 @@ RULES ENFORCED IN CODE (not left to the model)
     - No spending records: "spent 500 on food" belongs in the Sheet.
     - No card / account / ID numbers (the patterns in redact.py).
     - You can list and delete everything (/memories, /forget in the chat).
-    - Stored only on this laptop, in data/<mode>/memories.db (gitignored).
+    - Stored only on the machine that runs it, in DATA_DIR/memories.db (gitignored).
 """
 import json
 import math

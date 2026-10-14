@@ -5,6 +5,7 @@ saving) quickly and deterministically, without Ollama. How well a REAL model
 chooses tools is a separate question, answered by live runs with the real model.
 """
 import json
+import time
 
 import pytest
 
@@ -18,7 +19,7 @@ from fin_agent.agent import FALSE_CLAIM_WARNING, build_agent, check_claims, is_q
 from fin_agent.entries import build_from_text
 from fin_agent.llm import strip_thinking
 from fin_agent.sheets import MemoryStore
-from fin_agent.tools import save_expense
+from fin_agent.tools import prepare_expense, save_expense
 
 NOW = ("2026-09-30", "14:00:00")  # Wednesday
 
@@ -93,6 +94,54 @@ def test_declining_saves_nothing():
     result = agent.invoke(Command(resume="no"), CONFIG)
     assert len(store.load().entries) == before
     assert "declined" in tool_results(result)[-1]
+
+
+def two_expenses():
+    """ONE model message carrying TWO add_expense calls ("150 starbucks and 200 mcdonalds")."""
+    return AIMessage(content="", tool_calls=[
+        {"name": "add_expense", "args": {"amount": 150, "description": "starbucks"}, "id": "a"},
+        {"name": "add_expense", "args": {"amount": 200, "description": "mcdonalds"}, "id": "b"}])
+
+
+@pytest.mark.parametrize("answers, saved", [
+    (("yes", "yes"), ["Starbucks", "McDonald's"]),   # was 3 rows: Starbucks written twice
+    (("yes", "no"), ["Starbucks"]),                  # was 2 rows: Starbucks written twice
+    (("no", "yes"), ["McDonald's"]),
+    (("no", "no"), []),
+])
+def test_two_expenses_in_one_message_each_get_their_own_answer(answers, saved):
+    agent, store, model = make([two_expenses(), AIMessage("Done.")])
+    before = len(store.load().entries)
+    paused = ask(agent, "150 starbucks and 200 mcdonalds")
+    assert paused["__interrupt__"][0].value["summary"].startswith("150 EGP · Starbucks")
+    paused = agent.invoke(Command(resume=answers[0]), CONFIG)
+    assert paused["__interrupt__"][0].value["summary"].startswith("200 EGP · McDonald's")
+    result = agent.invoke(Command(resume=answers[1]), CONFIG)
+    assert [e.merchant for e in store.load().entries[before:]] == saved
+    # The model sees one result per call, in the order it asked, and is called once more.
+    assert [r.startswith("Saved:") for r in tool_results(result)] == [a == "yes" for a in answers]
+    assert model.calls == 2
+
+
+def test_an_answer_goes_to_the_expense_that_was_shown_even_if_it_is_slower(monkeypatch):
+    # Tool calls in one message used to run in PARALLEL threads, and the answer
+    # went to whichever reached interrupt() first. Make the first one slow (as a
+    # slow Sheet read would): "yes" to Starbucks must not save McDonald's.
+    from fin_agent import agent as agent_module
+
+    def slow_starbucks(snap, now, **fields):
+        if fields["description"] == "starbucks":
+            time.sleep(0.2)
+        return prepare_expense(snap, now, **fields)
+
+    monkeypatch.setattr(agent_module, "prepare_expense", slow_starbucks)
+    agent, store, _ = make([two_expenses(), AIMessage("Done.")])
+    before = len(store.load().entries)
+    paused = ask(agent, "150 starbucks and 200 mcdonalds")
+    assert paused["__interrupt__"][0].value["summary"].startswith("150 EGP · Starbucks")
+    agent.invoke(Command(resume="yes"), CONFIG)
+    agent.invoke(Command(resume="no"), CONFIG)
+    assert [e.merchant for e in store.load().entries[before:]] == ["Starbucks"]
 
 
 def test_unknown_merchant_asks_for_category_instead_of_saving():
@@ -287,7 +336,7 @@ def test_true_memory_claim_is_kept():
     assert result["messages"][-1].content == "Noted, your payday is the 1st."
 
 
-# --- Phase 5 analysis tools (fake Sheet from make(): 200 McDonald's 30/9, 900 Carrefour 27/9, 300 KFC 15/8) ---
+# --- Analysis tools (fake Sheet from make(): 200 McDonald's 30/9, 900 Carrefour 27/9, 300 KFC 15/8) ---
 
 def test_analyze_unessential_tool():
     agent, _, _ = make([call("analyze_unessential", period="this_month"), AIMessage("Fast Food.")])
@@ -369,19 +418,3 @@ def test_future_date_is_refused_and_explained_to_the_model():
     result = ask(agent, "log 50 at kfc")
     assert "in the future" in tool_results(result)[0]
     assert len(store.load().entries) == before
-
-
-def test_cloud_model_does_not_trigger_the_not_installed_warning(monkeypatch, capsys):
-    from fin_agent import chat, config
-
-    class Tags:
-        def json(self):
-            return {"models": [{"name": "qwen3.5:4b"}]}     # the cloud model is NOT in the local list
-
-    monkeypatch.setattr(chat.httpx, "get", lambda *a, **k: Tags())
-    monkeypatch.setattr(config, "MODEL", "gemma4:31b-cloud")
-    chat.check_ollama()
-    assert capsys.readouterr().out == ""                    # no false warning
-    monkeypatch.setattr(config, "MODEL", "missing-model:1b")
-    chat.check_ollama()
-    assert "isn't in `ollama list`" in capsys.readouterr().out   # a local model that's really missing still warns

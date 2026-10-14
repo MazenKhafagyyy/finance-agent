@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
 
-from fin_agent.chat import token_usage   # sums usage_metadata; shared with the terminal
+from fin_agent.llm import token_usage
 
 YES, NO = ("y", "yes"), ("n", "no")
 # After a decline the model answers once more. If it keeps asking to save

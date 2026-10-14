@@ -1,5 +1,5 @@
 """
-The assistant's TOOLS: plain Python functions the agent will call (Phase 3).
+The assistant's TOOLS: plain Python functions the agent calls.
 
 The model never does arithmetic. It picks a tool and fills in arguments like
 period="this_week"; these functions do the exact work and return plain

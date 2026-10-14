@@ -1,6 +1,7 @@
 """The Discord bot's plain functions: who may talk to it, and how a result
 becomes message text. Nothing here connects to Discord."""
-from fin_agent.discord_bot import allowed, confirm_text, forget_text, memories_text, render
+from fin_agent.app import forget_text, memories_text
+from fin_agent.discord_bot import allowed, confirm_text, render
 from fin_agent.memory import MemoryBank
 from fin_agent.turns import TurnResult
 from test_memory import fake_embed

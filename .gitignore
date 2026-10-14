@@ -1,6 +1,9 @@
 # --- PRIVACY: real financial data and secrets never go to git ---
-data/real/
+# data/ = the assistant's own files (conversations, memories, sessions) by default
+data/
 *.db
+*.db-shm
+*.db-wal
 .env
 .env.*
 !.env.example
